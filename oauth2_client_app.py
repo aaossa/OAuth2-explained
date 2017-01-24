@@ -10,6 +10,8 @@ app = Flask(__name__)
 # Usually, I put this envars in a `settings.py` module
 APP_CLIENT_ID = environ.get("APP_CLIENT_ID", "")
 APP_CLIENT_SECRET = environ.get("APP_CLIENT_SECRET", "")
+APP_SECRET_KEY = environ.get("APP_SECRET_KEY", secrets.token_hex())
+SERVICE_URL = "http://localhost:6000"
 
 
 @app.route("/")
@@ -26,25 +28,30 @@ def service():
     # Once the user is logged in, request a token to use
     credentials = loads(session["credentials"])
     headers = {"Authorization": "token {}".format(credentials["access_token"])}
-    request_uri = "http://localhost:6000/user"
-    response = requests.get(request_uri, headers=headers)
-    return dumps(response.json(), indent=4, sort_keys=True)
+    request_uri = "{}/user".format(SERVICE_URL)
+    try:
+        response = requests.get(request_uri, headers=headers)
+        return dumps(response.json(), indent=4, sort_keys=True)
+    except requests.exceptions.RequestException as e:
+        # Correct way to try/except using Python requests module
+        # http://stackoverflow.com/a/16511493/3281097
+        return redirect(url_for("error", reason=e))
 
 
 @app.route("/service/callback")
 def service_callback():
     # If we do NOT have a code, redirect user
     if "code" not in request.args:
-        session["state"] = secrets.token_url()
-        authorization_url = "http://localhost:6000/login/oauth/authorization?"
+        session["state"] = secrets.token_hex()
+        authorization_url = "{}/login/oauth/authorization".format(SERVICE_URL)
         authorization_params = urlencode({
             "client_id": APP_CLIENT_ID,
             "redirect_uri": url_for("service"),
             "response_type": "code",
-            "scope": "giveit2me",
+            "scope": "email",
             "state": session["state"]
         })
-        return redirect(authorization_url + authorization_params)
+        return redirect(authorization_url + "?" + authorization_params)
 
     # If we have a code, verify state, get a token and redirect
     authorization_code = request.args.get("code", "")
@@ -58,13 +65,17 @@ def service_callback():
         "code": authorization_code,
         "redirect_uri": url_for("service")
     }
-    exchange_request = requests.post(exchange_url, data=exchange_params)
-    session["credentials"] = exchange_request.text
-    return redirect(url_for("service"))
+    try:
+        exchange_request = requests.post(exchange_url, data=exchange_params)
+        session["credentials"] = exchange_request.text
+        return redirect(url_for("service"))
+    except requests.exceptions.RequestException as e:
+        return redirect(url_for("error", reason=e))
 
 
 @app.route("/error")
-def error(reason=None):
+def error():
+    reason = request.args.get("reason")
     if reason is None:
         abort(404)
     html = list()
@@ -73,7 +84,6 @@ def error(reason=None):
     return "\n".join(html)
 
 if __name__ == '__main__':
-    from uuid import uuid4
-    app.secret_key = str(uuid4())
     app.debug = True
+    app.secret_key = APP_SECRET_KEY  # This MUST be secret
     app.run()

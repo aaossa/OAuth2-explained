@@ -53,7 +53,8 @@ def service_callback():
         authorization_request_state = secrets.token_urlsafe(APP_SECRETS_ENTROPY)
         flask.session["service_state"] = hmac.new(
             SERVICE_STATE_SECRET_KEY,
-            msg=authorization_request_state.encode()
+            msg=authorization_request_state.encode(),
+            digestmod="sha256"
         ).hexdigest()
         authorization_request_uri = "{}/login/oauth/authorization".format(SERVICE_URL)
         authorization_request_params = {
@@ -68,7 +69,8 @@ def service_callback():
     # If we RECEIVE AN AUTHORIZATION GRANT, check state and request an access token
     hashed_authorization_state = hmac.new(
         SERVICE_STATE_SECRET_KEY,
-        msg=authorization_state.encode()
+        msg=authorization_state.encode(),
+        digestmod="sha256"
     ).hexdigest()
     if not hmac.compare_digest(flask.session["service_state"], hashed_authorization_state):
         flask.session.clear()

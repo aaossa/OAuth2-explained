@@ -1,86 +1,107 @@
-from flask import Flask, abort, redirect, request, session, url_for
-from json import dumps, loads
-from os import environ
 from urllib.parse import urlencode
+import flask
+import hmac
+import os
 import requests
-import secrets  # Python < 3.6: https://gist.github.com/aaossa/a4c83ad87cd61fbd4c06f37f5913d2e3
+import secrets  # Python < 3.6: https://hg.python.org/cpython/file/3.6/Lib/secrets.py
 
-app = Flask(__name__)
+app = flask.Flask(__name__)
 
 # Usually, I put this envars in a `settings.py` module
-APP_CLIENT_ID = environ.get("APP_CLIENT_ID", "")
-APP_CLIENT_SECRET = environ.get("APP_CLIENT_SECRET", "")
-APP_SECRET_KEY = environ.get("APP_SECRET_KEY", secrets.token_hex())
+APP_SECRETS_ENTROPY = int(os.environ.get("APP_SECRETS_ENTROPY", 88))
+APP_CLIENT_ID = os.environ.get("APP_CLIENT_ID", "")
+APP_CLIENT_SECRET = os.environ.get("APP_CLIENT_SECRET", "")
+APP_SECRET_KEY = os.environ.get("APP_SECRET_KEY", secrets.token_hex(APP_SECRETS_ENTROPY))
 SERVICE_URL = "http://localhost:6000"
+SERVICE_STATE_SECRET_KEY = os.environ.get("APP_SECRET_KEY", secrets.token_hex(APP_SECRETS_ENTROPY))
 
 
 @app.route("/")
 def index():
-    return redirect(url_for("service"))
+    return flask.redirect(flask.url_for("service"))
 
 
 @app.route("/service")
 def service():
-    # If the user is not logged in, then ask for authorization
-    if "credentials" not in session:
-        return redirect(url_for("service_callback"))
+    access_token = flask.session.get("service_access_token", None)
 
-    # Once the user is logged in, request a token to use
-    credentials = loads(session["credentials"])
-    headers = {"Authorization": "token {}".format(credentials["access_token"])}
-    request_uri = "{}/user".format(SERVICE_URL)
+    # If the app IS NOT AUTHORIZED, ask for authorization
+    if access_token is None:
+        return flask.redirect(flask.url_for("service_callback"))
+
+    # If the app IS AUTHORIZED, use the token
+    resource_request_uri = "{}/user".format(SERVICE_URL)
+    resource_request_header = {"Authorization": "token {}".format(access_token)}
     try:
-        response = requests.get(request_uri, headers=headers)
-        return dumps(response.json(), indent=4, sort_keys=True)
+        protected_resource = requests.get(resource_request_uri,
+                                          headers=resource_request_header)
+        return dumps(protected_resource.json(), indent=4, sort_keys=True)
     except requests.exceptions.RequestException as e:
         # Correct way to try/except using Python requests module
         # http://stackoverflow.com/a/16511493/3281097
-        return redirect(url_for("error", reason=e))
+        exception_name = e.__class__.__name__
+        return flask.redirect(flask.url_for("error", reason=exception_name, detail=e))
 
 
 @app.route("/service/callback")
 def service_callback():
-    # If we do NOT have a code, redirect user
-    if "code" not in request.args:
-        session["state"] = secrets.token_hex()
-        authorization_url = "{}/login/oauth/authorization".format(SERVICE_URL)
-        authorization_params = urlencode({
+    authorization_grant = flask.request.args.get("code", None)
+    authorization_state = flask.request.args.get("state", "")
+
+    # If we DO NOT RECEIVE AN AUTHORIZATION GRANT, request authorization
+    if authorization_grant is None:
+        authorization_request_state = secrets.token_urlsafe(APP_SECRETS_ENTROPY)
+        flask.session["service_state"] = hmac.new(
+            SERVICE_STATE_SECRET_KEY,
+            msg=authorization_request_state.encode()
+        ).hexdigest()
+        authorization_request_uri = "{}/login/oauth/authorization".format(SERVICE_URL)
+        authorization_request_params = {
             "client_id": APP_CLIENT_ID,
             "redirect_uri": url_for("service"),
             "response_type": "code",
             "scope": "email",
-            "state": session["state"]
-        })
-        return redirect(authorization_url + "?" + authorization_params)
+            "state": authorization_request_state
+        }
+        return flask.redirect(authorization_request_uri + "?" + urlencode(authorization_request_params))
 
-    # If we have a code, verify state, get a token and redirect
-    authorization_code = request.args.get("code", "")
-    authorization_state = request.args.get("state", "")
-    if authorization_state != session["state"]:
-        return redirect(url_for("error", reason="state"))
-    exchange_url = "http://localhost:6000/login/oauth/access_token"
-    exchange_params = {
+    # If we RECEIVE AN AUTHORIZATION GRANT, check state and request an access token
+    hashed_authorization_state = hmac.new(
+        SERVICE_STATE_SECRET_KEY,
+        msg=authorization_state.encode()
+    ).hexdigest()
+    if not hmac.compare_digest(flask.session["service_state"], hashed_authorization_state):
+        flask.session.clear()
+        return flask.redirect(flask.url_for("error", reason="CSRF verification failed.", detail="Request aborted."))
+    access_token_request_uri = "{}/login/oauth/access_token".format(SERVICE_URL)
+    access_token_request_header = {"Accept": "application/json"}
+    access_token_request_params = {
         "client_id": APP_CLIENT_ID,
         "client_secret": APP_CLIENT_SECRET,
-        "code": authorization_code,
+        "code": authorization_grant,
         "redirect_uri": url_for("service")
     }
     try:
-        exchange_request = requests.post(exchange_url, data=exchange_params)
-        session["credentials"] = exchange_request.text
-        return redirect(url_for("service"))
+        access_token_request = requests.post(access_token_request_uri,
+                                             headers=access_token_request_header,
+                                             data=access_token_request_params)
+        flask.session["service_access_token"] = access_token_request.json().get("access_token", "")
+        return flask.redirect(flask.url_for("service"))
     except requests.exceptions.RequestException as e:
-        return redirect(url_for("error", reason=e))
+        exception_name = e.__class__.__name__
+        return flask.redirect(flask.url_for("error", reason=exception_name, detail=e))
 
 
 @app.route("/error")
 def error():
-    reason = request.args.get("reason")
-    if reason is None:
-        abort(404)
+    reason = flask.request.args.get("reason", "WTF! (What the Flask)")
+    detail = flask.request.args.get("detail", "You should not be here :(")
     html = list()
+    html.append("<html>")
     html.append("<head><title>Error</title></head>")
-    html.append("<body><h1>{}</h1></body>".format(reason))
+    html.append("<body><h1>{}</h1>".format(reason))
+    html.append("<h3>{}</h3></body>".format(detail))
+    html.append("</html>")
     return "\n".join(html)
 
 if __name__ == '__main__':

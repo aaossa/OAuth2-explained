@@ -1,29 +1,79 @@
-# Since Python 3.6 this will be a module in the standard library
-# This code is just a simple implementation of the same ideas in both sources
+"""Generate cryptographically strong pseudo-random numbers suitable for
+managing secrets such as account authentication, tokens, and similar.
 
-# Python 3.6 Docs: https://docs.python.org/dev/library/secrets.html
-# https://hg.python.org/cpython/file/default/Lib/secrets.py
+See PEP 506 for more information.
+https://www.python.org/dev/peps/pep-0506/
 
-# PEP 506: https://www.python.org/dev/peps/pep-0506
-# https://bitbucket.org/sdaprano/secrets/src/3e89097653e70ba6e56a8d81f8c94b87294ddf9a/src/secrets.py
+Code taken from source: https://hg.python.org/cpython/file/3.6/Lib/secrets.py
+I have a gist with the code: https://gist.github.com/aaossa/a4c83ad87cd61fbd4c06f37f5913d2e3
+"""
+
+__all__ = ['choice', 'randbelow', 'randbits', 'SystemRandom',
+           'token_bytes', 'token_hex', 'token_urlsafe',
+           'compare_digest',
+           ]
+
 
 import base64
 import binascii
 import os
 
+from hmac import compare_digest
+from random import SystemRandom
 
-DEFAULT_LENGHT = 32
+_sysrand = SystemRandom()
+
+randbits = _sysrand.getrandbits
+choice = _sysrand.choice
+
+
+def randbelow(exclusive_upper_bound):
+    """Return a random int in the range [0, n)."""
+    if exclusive_upper_bound <= 0:
+        raise ValueError("Upper bound must be positive.")
+    return _sysrand._randbelow(exclusive_upper_bound)
+
+DEFAULT_ENTROPY = 32  # number of bytes to return by default
 
 
 def token_bytes(nbytes=None):
+    """Return a random byte string containing *nbytes* bytes.
+
+    If *nbytes* is ``None`` or not supplied, a reasonable
+    default is used.
+
+    >>> token_bytes(16)  #doctest:+SKIP
+    b'\\xebr\\x17D*t\\xae\\xd4\\xe3S\\xb6\\xe2\\xebP1\\x8b'
+
+    """
     if nbytes is None:
-        nbytes = DEFAULT_LENGHT
+        nbytes = DEFAULT_ENTROPY
     return os.urandom(nbytes)
 
 
 def token_hex(nbytes=None):
+    """Return a random text string, in hexadecimal.
+
+    The string has *nbytes* random bytes, each byte converted to two
+    hex digits.  If *nbytes* is ``None`` or not supplied, a reasonable
+    default is used.
+
+    >>> token_hex(16)  #doctest:+SKIP
+    'f9bf78b9a18ce6d46a0cd2b0b86df9da'
+
+    """
     return binascii.hexlify(token_bytes(nbytes)).decode('ascii')
 
 
-def token_url(nbytes=None):
-    return base64.urlsafe_b64encode(token_bytes(nbytes)).rstrip(b'=').decode('ascii')
+def token_urlsafe(nbytes=None):
+    """Return a random URL-safe text string, in Base64 encoding.
+
+    The string has *nbytes* random bytes.  If *nbytes* is ``None``
+    or not supplied, a reasonable default is used.
+
+    >>> token_urlsafe(16)  #doctest:+SKIP
+    'Drmhze6EPcv0fN_81Bj-nA'
+
+    """
+    tok = token_bytes(nbytes)
+    return base64.urlsafe_b64encode(tok).rstrip(b'=').decode('ascii')
